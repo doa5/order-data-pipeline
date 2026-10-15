@@ -534,105 +534,126 @@ def write_audit(out_dir, entry):
 # =====================================================================
 # ORCHESTRATION
 # =====================================================================
-def print_stage(title):
-    print(f"\n{'=' * 64}\n{title}\n{'=' * 64}")
+def silent(*args, **kwargs):
+    """Stand-in for print when verbose=False: accepts the same arguments, prints nothing."""
+
+
+def print_stage(say, title):
+    say(f"\n{'=' * 64}\n{title}\n{'=' * 64}")
+
+
+def report_extract(say, orders, customers, logs):
+    say(
+        f"Rows read  orders={len(orders)}  customers={len(customers)}  logs={len(logs)}"
+    )
+    say("Schema checks passed (required columns, non-blank and unique keys)")
+    say("CRM query reads only required columns (phone never extracted)")
+    say("JSON tracking_details flattened by json_normalize:")
+    for nested, flat in JSON_FLATTEN_RENAME.items():
+        say(f"  {nested} -> {flat}")
+
+
+def report_clean(say, orders_c, clean_stats):
+    say(
+        f"DD/MM/YYYY dates parsed explicitly: "
+        f"{clean_stats['slash_format_dates']} of {len(orders_c)}"
+    )
+    say(f"Status imputed to '{PENDING}': {clean_stats['imputed_status_orders']}")
+    say("Account tiers normalised to VIP / Gold / Standard (all recognised)")
+    say("Emails normalised and HMAC-SHA-256 hashed; raw email dropped")
+
+
+def report_merge(say, orders_c, merge_stats):
+    say(f"Merged rows: {merge_stats['rows_merged']} (orders in: {len(orders_c)})")
+    say(f"Unmapped customers: {merge_stats['unmapped_customers']}")
+    say(f"Orphan delivery logs (no matching order): {merge_stats['orphan_logs']}")
+    say(f"Orders without a delivery log: {merge_stats['orders_without_logs']}")
+
+
+def report_charts(say, value_by_tier, status_by_carrier, chart_paths):
+    say("Value at risk by tier (GBP):")
+    say(value_by_tier.assign(Total=value_by_tier.sum(axis=1)).round(2).to_string())
+    say("\nStatus counts by carrier:")
+    say(status_by_carrier.to_string())
+    say(f"\nCharts saved: {[p.name for p in chart_paths]}")
+
+
+def report_export(say, escalations):
+    counts = escalations["escalation_priority"].value_counts().to_dict()
+    say(f"Escalations: {len(escalations)}  {counts}")
+    summary_cols = [
+        "order_id",
+        "escalation_priority",
+        "account_tier",
+        "order_value",
+        "carrier",
+        "delivery_notes",
+    ]
+    say(escalations[summary_cols].to_string(index=False))
+    say(f"\nOutputs: {MASTER_FILE}, {PAYLOAD_FILE}, {PAYLOAD_CSV_FILE}")
+
+
+def success_audit(clean_stats, merge_stats, master, escalations):
+    """The audit fields recorded when every stage completes."""
+    counts = escalations["escalation_priority"].value_counts().to_dict()
+    return {
+        "status": "success",
+        "rows_merged": merge_stats["rows_merged"],
+        "unmapped_customers": merge_stats["unmapped_customers"],
+        "orphan_logs": merge_stats["orphan_logs"],
+        "orders_without_logs": merge_stats["orders_without_logs"],
+        "slash_format_dates": clean_stats["slash_format_dates"],
+        "imputations": {"status": clean_stats["imputed_status_orders"]},
+        "total_order_value": round(float(master["order_value"].sum()), 2),
+        "escalations": {"total": len(escalations), **counts},
+        "outputs": [
+            MASTER_FILE,
+            PAYLOAD_FILE,
+            PAYLOAD_CSV_FILE,
+            CHART_TIER_FILE,
+            CHART_CARRIER_FILE,
+        ],
+    }
 
 
 def run_pipeline(input_dir=INPUT_DIR, out_dir=OUTPUT_DIR, verbose=True):
     input_dir = Path(input_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    say = print if verbose else (lambda *a, **k: None)
+    say = print if verbose else silent
 
     run_id = uuid.uuid4().hex[:8]
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     audit = {"run_id": run_id, "timestamp": started, "status": "running"}
 
     try:
-        if verbose:
-            print_stage("STAGE 1: EXTRACT AND VALIDATE")
+        print_stage(say, "STAGE 1: EXTRACT AND VALIDATE")
         orders, customers, logs = extract(input_dir)
         audit["rows_in"] = {
             "orders": len(orders),
             "customers": len(customers),
             "logs": len(logs),
         }
-        say(
-            f"Rows read  orders={len(orders)}  customers={len(customers)}  logs={len(logs)}"
-        )
-        say("Schema checks passed (required columns, non-blank and unique keys)")
-        say("CRM query reads only required columns (phone never extracted)")
-        say("JSON tracking_details flattened by json_normalize:")
-        for nested, flat in JSON_FLATTEN_RENAME.items():
-            say(f"  {nested} -> {flat}")
+        report_extract(say, orders, customers, logs)
 
-        if verbose:
-            print_stage("STAGE 2: CLEAN AND NORMALISE")
+        print_stage(say, "STAGE 2: CLEAN AND NORMALISE")
         orders_c, customers_c, logs_c, clean_stats = clean(orders, customers, logs)
-        say(
-            f"DD/MM/YYYY dates parsed explicitly: {clean_stats['slash_format_dates']} of {len(orders_c)}"
-        )
-        say(f"Status imputed to '{PENDING}': {clean_stats['imputed_status_orders']}")
-        say("Account tiers normalised to VIP / Gold / Standard (all recognised)")
-        say("Emails normalised and HMAC-SHA-256 hashed; raw email dropped")
+        report_clean(say, orders_c, clean_stats)
 
-        if verbose:
-            print_stage("STAGE 3: RELATIONAL MERGE")
+        print_stage(say, "STAGE 3: RELATIONAL MERGE")
         merged, merge_stats = merge(orders_c, customers_c, logs_c)
-        say(f"Merged rows: {merge_stats['rows_merged']} (orders in: {len(orders_c)})")
-        say(f"Unmapped customers: {merge_stats['unmapped_customers']}")
-        say(f"Orphan delivery logs (no matching order): {merge_stats['orphan_logs']}")
-        say(f"Orders without a delivery log: {merge_stats['orders_without_logs']}")
+        report_merge(say, orders_c, merge_stats)
 
-        if verbose:
-            print_stage("STAGE 4: AGGREGATE AND VISUALISE")
+        print_stage(say, "STAGE 4: AGGREGATE AND VISUALISE")
         value_by_tier, status_by_carrier = aggregate(merged)
         chart_paths = visualise(value_by_tier, status_by_carrier, out_dir)
-        say("Value at risk by tier (GBP):")
-        say(value_by_tier.assign(Total=value_by_tier.sum(axis=1)).round(2).to_string())
-        say("\nStatus counts by carrier:")
-        say(status_by_carrier.to_string())
-        say(f"\nCharts saved: {[p.name for p in chart_paths]}")
+        report_charts(say, value_by_tier, status_by_carrier, chart_paths)
 
-        if verbose:
-            print_stage("STAGE 5: ESCALATE, EXPORT AND AUDIT")
+        print_stage(say, "STAGE 5: ESCALATE, EXPORT AND AUDIT")
         master, escalations = export(merged, out_dir, run_id, started)
-        priority_counts = escalations["escalation_priority"].value_counts().to_dict()
-        say(f"Escalations: {len(escalations)}  {priority_counts}")
-        say(
-            escalations[
-                [
-                    "order_id",
-                    "escalation_priority",
-                    "account_tier",
-                    "order_value",
-                    "carrier",
-                    "delivery_notes",
-                ]
-            ].to_string(index=False)
-        )
-        say(f"\nOutputs: {MASTER_FILE}, {PAYLOAD_FILE}, {PAYLOAD_CSV_FILE}")
+        report_export(say, escalations)
 
-        audit.update(
-            {
-                "status": "success",
-                "rows_merged": merge_stats["rows_merged"],
-                "unmapped_customers": merge_stats["unmapped_customers"],
-                "orphan_logs": merge_stats["orphan_logs"],
-                "orders_without_logs": merge_stats["orders_without_logs"],
-                "slash_format_dates": clean_stats["slash_format_dates"],
-                "imputations": {"status": clean_stats["imputed_status_orders"]},
-                "total_order_value": round(float(master["order_value"].sum()), 2),
-                "escalations": {"total": len(escalations), **priority_counts},
-                "outputs": [
-                    MASTER_FILE,
-                    PAYLOAD_FILE,
-                    PAYLOAD_CSV_FILE,
-                    CHART_TIER_FILE,
-                    CHART_CARRIER_FILE,
-                ],
-            }
-        )
+        audit.update(success_audit(clean_stats, merge_stats, master, escalations))
         return {
             "master": master,
             "escalations": escalations,
@@ -654,12 +675,12 @@ def run_pipeline(input_dir=INPUT_DIR, out_dir=OUTPUT_DIR, verbose=True):
         )
         raise
     finally:
+        # Runs on success AND failure, so every run leaves exactly one audit line.
         audit["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         write_audit(out_dir, audit)
-        if verbose:
-            print(
-                f"\nAudit entry appended to {AUDIT_FILE} (run {run_id}, status={audit['status']})"
-            )
+        say(
+            f"\nAudit entry appended to {AUDIT_FILE} (run {run_id}, status={audit['status']})"
+        )
 
 
 def main():
