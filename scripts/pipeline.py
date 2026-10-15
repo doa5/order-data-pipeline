@@ -449,10 +449,10 @@ def visualise(value_by_tier, status_by_carrier, out_dir):
 # STAGE 5: ESCALATE, EXPORT AND AUDIT
 # =====================================================================
 def assign_priority(merged):
-    """P1: failed + VIP. P2: failed + not VIP + order value >= £100 (also catches Unknown customers).
+    """Return "P1", "P2" or NA for each order.
 
-    Two separate tiers mean the VIP rule is actually exercised: with one combined
-    rule, every failed order in the sample is >= £100 and would trigger anyway.
+    P1: failed delivery for a VIP customer, at any order value.
+    P2: failed delivery for any other customer (including Unknown) worth >= £100.
     """
     failed = merged["status"].eq(FAILED)
     vip = merged["account_tier"].eq("VIP")
@@ -512,7 +512,7 @@ def export(merged, out_dir, run_id, generated_at):
     escalations = master[master["escalation_priority"].notna()].sort_values(
         ["escalation_priority", "order_value"], ascending=[True, False]
     )[PAYLOAD_COLUMNS]
-    records = json.loads(escalations.to_json(orient="records"))
+    records = escalations.to_dict("records")
     payload = {
         "run_id": run_id,
         "generated_at": generated_at,
