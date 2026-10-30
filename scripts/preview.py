@@ -1,9 +1,14 @@
 # /// script
-# requires-python = ">=3.14"
+# requires-python = ">=3.11"
 # dependencies = [
 #     "pandas>=3.0.6",
 # ]
 # ///
+"""Print the first rows of each raw source, for the database screenshots in the report.
+
+Run:  uv run scripts/preview.py   (after generate_data.py)
+"""
+
 import json
 import sqlite3
 from pathlib import Path

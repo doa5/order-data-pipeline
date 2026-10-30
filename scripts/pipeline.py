@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.14"
+# requires-python = ">=3.11"
 # dependencies = [
 #     "pandas>=3.0.6",
 #     "matplotlib>=3.10",
@@ -8,7 +8,7 @@
 """Failed-delivery escalation pipeline.
 
 Extracts orders (CSV), customers (SQLite) and delivery logs (JSON), cleans and
-merges them into one master dataset, draws two charts, and exports a JSON
+merges them into one master dataset, draws three charts, and exports a JSON
 payload of high-priority escalations for Power Automate. Every run appends one
 line to pipeline_audit.jsonl, whether it succeeds or fails.
 
@@ -20,8 +20,10 @@ Run:  uv run scripts/pipeline.py
 import hashlib
 import hmac
 import json
+import os
 import sqlite3
 import sys
+import textwrap
 import uuid
 from contextlib import closing
 from datetime import datetime, timezone
@@ -29,6 +31,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 INPUT_DIR = PROJECT_DIR / "input"
@@ -42,8 +45,9 @@ MASTER_FILE = "combined_master_dataset.csv"
 PAYLOAD_FILE = "high_priority_escalations.json"
 PAYLOAD_CSV_FILE = "high_priority_escalations.csv"
 AUDIT_FILE = "pipeline_audit.jsonl"
-CHART_TIER_FILE = "chart1_value_at_risk_by_tier.png"
-CHART_CARRIER_FILE = "chart2_status_by_carrier.png"
+CHART_TIER_FILE = "figure1_value_at_risk_by_tier.png"
+CHART_CARRIER_FILE = "figure2_status_by_carrier.png"
+CHART_HUB_FILE = "figure3_failed_by_hub.png"
 
 REQUIRED_COLUMNS = {
     "orders": {
@@ -82,10 +86,11 @@ AT_RISK_STATUSES = [FAILED, DELAYED, PENDING]
 
 P2_VALUE_THRESHOLD = 100.00
 
-# Secret key for the keyed email hash (HMAC). Hard-coded for this proof of concept;
-# production would load it from a secrets vault such as Azure Key Vault, stored
+# Secret key for the keyed email hash (HMAC), read from the environment so it is not
+# stored with the code. The fallback is a demo value for this proof of concept only;
+# production would load the key from a secrets vault such as Azure Key Vault, stored
 # separately from the data as ICO pseudonymisation guidance recommends.
-HASH_KEY = "demo-key"
+HASH_KEY = os.environ.get("PIPELINE_HASH_KEY", "demo-key")
 
 
 class PipelineError(Exception):
@@ -405,15 +410,31 @@ def aggregate(merged):
     status_by_carrier = status_by_carrier.loc[
         status_by_carrier.sum(axis=1).sort_values(ascending=False).index
     ]
-    return value_by_tier, status_by_carrier
+
+    # One-column table so the hub chart reuses stacked_bar; stable sort keeps ties alphabetical.
+    failed_by_hub = (
+        merged[merged["status"].eq(FAILED)]
+        .groupby("last_checkpoint")
+        .size()
+        .sort_values(ascending=False, kind="stable")
+        .rename(FAILED)
+        .to_frame()
+    )
+    return value_by_tier, status_by_carrier, failed_by_hub
 
 
-def draw_chart(table, value_fmt, title, xlabel, ylabel, path):
+def draw_chart(table, value_fmt, title, xlabel, ylabel, path, axis_fmt=None):
     fig, ax = plt.subplots(figsize=(8, 5))  # fig = whole image, ax = the plot area
     stacked_bar(ax, table, value_fmt)
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
+    if axis_fmt:
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: axis_fmt(v)))
+    else:
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))  # counts: whole numbers only
+    # Wrap long category names onto two lines so neighbouring labels never collide.
+    ax.set_xticks(range(len(table)), [textwrap.fill(str(i), 12) for i in table.index])
     # Legend just outside the right edge of the plot so it never covers bars.
     ax.legend(title="Delivery status", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
@@ -422,25 +443,34 @@ def draw_chart(table, value_fmt, title, xlabel, ylabel, path):
     return path
 
 
-def visualise(value_by_tier, status_by_carrier, out_dir):
+def visualise(value_by_tier, status_by_carrier, failed_by_hub, out_dir):
     plt.style.use("seaborn-v0_8-whitegrid")
     out_dir = Path(out_dir)
     return [
         draw_chart(
             value_by_tier,
             money,
-            "Chart 1: Order value at risk by customer tier",
+            "Figure 1: Order value at risk by customer tier",
             "Account tier",
             "Order value (£)",
             out_dir / CHART_TIER_FILE,
+            axis_fmt=lambda v: f"£{v:,.0f}",
         ),
         draw_chart(
             status_by_carrier,
             count,
-            "Chart 2: Delivery status counts by carrier",
+            "Figure 2: Delivery status counts by carrier",
             "Carrier",
             "Number of orders",
             out_dir / CHART_CARRIER_FILE,
+        ),
+        draw_chart(
+            failed_by_hub,
+            count,
+            "Figure 3: Failed deliveries by last checkpoint hub",
+            "Last checkpoint",
+            "Failed deliveries",
+            out_dir / CHART_HUB_FILE,
         ),
     ]
 
@@ -482,13 +512,12 @@ MASTER_COLUMNS = [
     "escalation_priority",
 ]
 
-# The payload identifies customers only by customer_id and email_hash; the flow looks up
-# contact details inside the M365 tenant, so no personal data travels in the file.
+# The payload identifies customers only by the pseudonymous customer_id; the flow looks up
+# contact details inside the M365 tenant, so no direct identifiers travel in the file.
 PAYLOAD_COLUMNS = [
     "order_id",
     "escalation_priority",
     "customer_id",
-    "email_hash",
     "account_tier",
     "customer_matched",
     "order_date",
@@ -570,11 +599,13 @@ def report_merge(say, orders_c, merge_stats):
     say(f"Orders without a delivery log: {merge_stats['orders_without_logs']}")
 
 
-def report_charts(say, value_by_tier, status_by_carrier, chart_paths):
+def report_charts(say, value_by_tier, status_by_carrier, failed_by_hub, chart_paths):
     say("Value at risk by tier (GBP):")
     say(value_by_tier.assign(Total=value_by_tier.sum(axis=1)).round(2).to_string())
     say("\nStatus counts by carrier:")
     say(status_by_carrier.to_string())
+    say("\nFailed deliveries by last checkpoint hub:")
+    say(failed_by_hub.to_string())
     say(f"\nCharts saved: {[p.name for p in chart_paths]}")
 
 
@@ -612,6 +643,7 @@ def success_audit(clean_stats, merge_stats, master, escalations):
             PAYLOAD_CSV_FILE,
             CHART_TIER_FILE,
             CHART_CARRIER_FILE,
+            CHART_HUB_FILE,
         ],
     }
 
@@ -645,9 +677,13 @@ def run_pipeline(input_dir=INPUT_DIR, out_dir=OUTPUT_DIR, verbose=True):
         report_merge(say, orders_c, merge_stats)
 
         print_stage(say, "STAGE 4: AGGREGATE AND VISUALISE")
-        value_by_tier, status_by_carrier = aggregate(merged)
-        chart_paths = visualise(value_by_tier, status_by_carrier, out_dir)
-        report_charts(say, value_by_tier, status_by_carrier, chart_paths)
+        value_by_tier, status_by_carrier, failed_by_hub = aggregate(merged)
+        chart_paths = visualise(
+            value_by_tier, status_by_carrier, failed_by_hub, out_dir
+        )
+        report_charts(
+            say, value_by_tier, status_by_carrier, failed_by_hub, chart_paths
+        )
 
         print_stage(say, "STAGE 5: ESCALATE, EXPORT AND AUDIT")
         master, escalations = export(merged, out_dir, run_id, started)
@@ -659,6 +695,7 @@ def run_pipeline(input_dir=INPUT_DIR, out_dir=OUTPUT_DIR, verbose=True):
             "escalations": escalations,
             "value_by_tier": value_by_tier,
             "status_by_carrier": status_by_carrier,
+            "failed_by_hub": failed_by_hub,
             "audit": audit,
         }
 
