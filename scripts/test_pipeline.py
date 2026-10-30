@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.14"
+# requires-python = ">=3.11"
 # dependencies = [
 #     "pandas>=3.0.6",
 #     "matplotlib>=3.10",
@@ -53,8 +53,8 @@ def read_audit(folder):
 # ---------------------------------------------------------------- expected results table
 def test_rows_in_and_merged(run):
     result, _ = run
-    assert result["audit"]["rows_in"] == {"orders": 20, "customers": 8, "logs": 21}
-    assert len(result["master"]) == 20
+    assert result["audit"]["rows_in"] == {"orders": 21, "customers": 8, "logs": 22}
+    assert len(result["master"]) == 21
 
 
 def test_unmapped_customer(run):
@@ -85,13 +85,13 @@ def test_imputations(run):
 def test_slash_dates_and_total_value(run):
     result, _ = run
     assert result["audit"]["slash_format_dates"] == 7
-    assert result["master"]["order_value"].sum() == pytest.approx(3510.69)
+    assert result["master"]["order_value"].sum() == pytest.approx(3545.69)
 
 
 def test_status_counts(run):
     counts = run[0]["master"]["status"].value_counts().to_dict()
     assert counts == {
-        "Failed Delivery": 7,
+        "Failed Delivery": 8,
         "Delivered": 6,
         "In Transit": 4,
         "Delayed": 2,
@@ -101,14 +101,14 @@ def test_status_counts(run):
 
 def test_failed_value_by_tier(run):
     failed = run[0]["value_by_tier"]["Failed Delivery"]
-    assert failed.sum() == pytest.approx(2355.50)
+    assert failed.sum() == pytest.approx(2390.50)
     assert failed["VIP"] == pytest.approx(1695.50)
     assert failed["Gold"] == pytest.approx(210.00)
-    assert failed["Standard"] == pytest.approx(450.00)
+    assert failed["Standard"] == pytest.approx(485.00)
 
 
 def test_value_at_risk(run):
-    assert run[0]["value_by_tier"].to_numpy().sum() == pytest.approx(2705.70)
+    assert run[0]["value_by_tier"].to_numpy().sum() == pytest.approx(2740.70)
 
 
 def test_escalations(run):
@@ -124,8 +124,22 @@ def test_escalations(run):
     ].sum() == pytest.approx(1695.50)
 
 
+def test_low_value_failure_not_escalated(run):
+    # ORD_1021: failed, Standard tier, £35 - below the P2 threshold, so no priority.
+    master = run[0]["master"].set_index("order_id")
+    assert master.loc["ORD_1021", "status"] == "Failed Delivery"
+    assert pd.isna(master.loc["ORD_1021", "escalation_priority"])
+    assert "ORD_1021" not in set(run[0]["escalations"]["order_id"])
+
+
 def test_dpd_failures(run):
     assert run[0]["status_by_carrier"].loc["DPD", "Failed Delivery"] == 5
+
+
+def test_failed_by_hub(run):
+    hubs = run[0]["failed_by_hub"]["Failed Delivery"]
+    assert hubs.sum() == 8
+    assert hubs.index[0] == "Manchester Hub" and hubs["Manchester Hub"] == 4
 
 
 # ---------------------------------------------------------------- specific fixes
@@ -164,7 +178,7 @@ def test_no_personal_data_in_outputs(run):
     payload = json.loads((out / p.PAYLOAD_FILE).read_text(encoding="utf-8"))
     assert payload["escalation_count"] == 7
     for record in payload["escalations"]:
-        assert not {"email", "phone", "full_name"} & set(record)
+        assert not {"email", "email_hash", "phone", "full_name"} & set(record)
         assert record["delivery_notes"] and record["last_checkpoint"]
     for text in [
         (out / f).read_text(encoding="utf-8") for f in (p.MASTER_FILE, p.PAYLOAD_FILE)
