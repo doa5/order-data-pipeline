@@ -70,7 +70,7 @@ def create_crm():
     cursor.execute("DROP TABLE IF EXISTS customers")
     cursor.execute("""
         CREATE TABLE customers (
-            customer_id TEXT PRIMARY KEY,
+            customer_id TEXT PRIMARY KEY NOT NULL,
             full_name TEXT,
             email TEXT,
             account_tier TEXT NOT NULL,
