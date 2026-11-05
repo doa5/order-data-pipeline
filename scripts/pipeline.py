@@ -45,9 +45,9 @@ MASTER_FILE = "combined_master_dataset.csv"
 PAYLOAD_FILE = "high_priority_escalations.json"
 PAYLOAD_CSV_FILE = "high_priority_escalations.csv"
 AUDIT_FILE = "pipeline_audit.jsonl"
-CHART_TIER_FILE = "figure1_value_at_risk_by_tier.png"
-CHART_CARRIER_FILE = "figure2_status_by_carrier.png"
-CHART_HUB_FILE = "figure3_failed_by_hub.png"
+CHART_TIER_FILE = "figure4a_value_at_risk_by_tier.png"
+CHART_CARRIER_FILE = "figure4b_status_by_carrier.png"
+CHART_HUB_FILE = "figure4c_failed_by_hub.png"
 
 REQUIRED_COLUMNS = {
     "orders": {
@@ -390,7 +390,7 @@ def stacked_bar(ax, table, value_fmt):
     ax.bar_label(
         bars, labels=[value_fmt(v) for v in bottom], padding=3, fontweight="bold"
     )
-    ax.set_ylim(0, bottom.max() * 1.12)  # headroom so the total labels clear the title
+    ax.set_ylim(0, bottom.max() * 1.12)  # headroom so the total labels clear the top edge
 
 
 def aggregate(merged):
@@ -423,10 +423,10 @@ def aggregate(merged):
     return value_by_tier, status_by_carrier, failed_by_hub
 
 
-def draw_chart(table, value_fmt, title, xlabel, ylabel, path, axis_fmt=None):
+def draw_chart(table, value_fmt, xlabel, ylabel, path, axis_fmt=None):
+    # No title: the report supplies each figure's caption.
     fig, ax = plt.subplots(figsize=(8, 5))  # fig = whole image, ax = the plot area
     stacked_bar(ax, table, value_fmt)
-    ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if axis_fmt:
@@ -450,7 +450,6 @@ def visualise(value_by_tier, status_by_carrier, failed_by_hub, out_dir):
         draw_chart(
             value_by_tier,
             money,
-            "Figure 1: Order value at risk by customer tier",
             "Account tier",
             "Order value (£)",
             out_dir / CHART_TIER_FILE,
@@ -459,7 +458,6 @@ def visualise(value_by_tier, status_by_carrier, failed_by_hub, out_dir):
         draw_chart(
             status_by_carrier,
             count,
-            "Figure 2: Delivery status counts by carrier",
             "Carrier",
             "Number of orders",
             out_dir / CHART_CARRIER_FILE,
@@ -467,7 +465,6 @@ def visualise(value_by_tier, status_by_carrier, failed_by_hub, out_dir):
         draw_chart(
             failed_by_hub,
             count,
-            "Figure 3: Failed deliveries by last checkpoint hub",
             "Last checkpoint",
             "Failed deliveries",
             out_dir / CHART_HUB_FILE,
