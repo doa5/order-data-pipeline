@@ -12,7 +12,7 @@ Run:  uv run scripts/preview.py   (after generate_data.py)
 import json
 import sqlite3
 from pathlib import Path
-import pandas as pd 
+import pandas as pd
 
 INPUT_DIR = Path(__file__).resolve().parent.parent / "input"
 

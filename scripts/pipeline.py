@@ -390,7 +390,9 @@ def stacked_bar(ax, table, value_fmt):
     ax.bar_label(
         bars, labels=[value_fmt(v) for v in bottom], padding=3, fontweight="bold"
     )
-    ax.set_ylim(0, bottom.max() * 1.12)  # headroom so the total labels clear the top edge
+    ax.set_ylim(
+        0, bottom.max() * 1.12
+    )  # headroom so the total labels clear the top edge
 
 
 def aggregate(merged):
@@ -432,7 +434,9 @@ def draw_chart(table, value_fmt, xlabel, ylabel, path, axis_fmt=None):
     if axis_fmt:
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: axis_fmt(v)))
     else:
-        ax.yaxis.set_major_locator(MaxNLocator(integer=True))  # counts: whole numbers only
+        ax.yaxis.set_major_locator(
+            MaxNLocator(integer=True)
+        )  # counts: whole numbers only
     # Wrap long category names onto two lines so neighbouring labels never collide.
     ax.set_xticks(range(len(table)), [textwrap.fill(str(i), 12) for i in table.index])
     # Legend just outside the right edge of the plot so it never covers bars.
@@ -678,9 +682,7 @@ def run_pipeline(input_dir=INPUT_DIR, out_dir=OUTPUT_DIR, verbose=True):
         chart_paths = visualise(
             value_by_tier, status_by_carrier, failed_by_hub, out_dir
         )
-        report_charts(
-            say, value_by_tier, status_by_carrier, failed_by_hub, chart_paths
-        )
+        report_charts(say, value_by_tier, status_by_carrier, failed_by_hub, chart_paths)
 
         print_stage(say, "STAGE 5: ESCALATE, EXPORT AND AUDIT")
         master, escalations = export(merged, out_dir, run_id, started)
